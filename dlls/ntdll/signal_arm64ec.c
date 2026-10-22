@@ -55,6 +55,8 @@ static unsigned int (WINAPI *pBTCpu64IosReleaseThreadHolds)(void*, unsigned long
 static void     (WINAPI *pBTCpu64NotifyMemoryDirty)(void*,SIZE_T);
 static void     (WINAPI *pBTCpu64NotifyReadFile)(HANDLE,void*,SIZE_T,BOOL,NTSTATUS);
 static void     (WINAPI *pBeginSimulation)(void);
+/* Native dispatcher exports, retained before hybrid pointer redirection. */
+static void *ios_exit_to_x64, *ios_dispatch_jump;
 static void     (WINAPI *pFlushInstructionCacheHeavy)(const void*,SIZE_T);
 static NTSTATUS (WINAPI *pNotifyMapViewOfSection)(void*,void*,void*,SIZE_T,ULONG,ULONG);
 static void     (WINAPI *pNotifyImageMap)(void*);
@@ -602,6 +604,8 @@ NTSTATUS arm64ec_process_init_dispatchers( HMODULE module )
     __os_arm64x_dispatch_call_no_redirect = RtlFindExportedRoutineByName( module, "ExitToX64" );
     __os_arm64x_dispatch_fptr = RtlFindExportedRoutineByName( module, "DispatchJump" );
     __os_arm64x_dispatch_ret = RtlFindExportedRoutineByName( module, "RetToEntryThunk" );
+    ios_exit_to_x64 = __os_arm64x_dispatch_call_no_redirect;
+    ios_dispatch_jump = __os_arm64x_dispatch_fptr;
 
     /* The dispatcher globals were 0 when EVERY ARM64EC module's
      * arm64ec_update_hybrid_metadata ran (because the globals only get set
@@ -1877,11 +1881,51 @@ static void ios_log_unmap( void *addr )
     }
 }
 
+/* Non-image sections can contain generated guest code too. Register only
+ * committed regions (SEC_RESERVE may have holes), using their actual page
+ * protections. The image callback parses PE headers and cannot handle these
+ * mappings. Keep callbacks paired and inside the caller's syscall guard. */
+static void notify_mapped_section_protection( void *addr, SIZE_T size )
+{
+    MEMORY_BASIC_INFORMATION info;
+    char *cursor = addr;
+    SIZE_T remaining = size, length;
+
+    TRACE( "mapped-section protections addr=%p size=%Iu\n", addr, size );
+    if (!pNotifyMemoryProtect) return;
+    while (remaining)
+    {
+        if (NtQueryVirtualMemory( GetCurrentProcess(), cursor, MemoryBasicInformation,
+                                  &info, sizeof(info), NULL )) break;
+        if ((char *)info.BaseAddress > cursor ||
+            (SIZE_T)(cursor - (char *)info.BaseAddress) >= info.RegionSize) break;
+        length = min( remaining, info.RegionSize - (SIZE_T)(cursor - (char *)info.BaseAddress) );
+        if (info.State == MEM_COMMIT)
+        {
+            pNotifyMemoryProtect( cursor, length, info.Protect, FALSE, 0 );
+            pNotifyMemoryProtect( cursor, length, info.Protect, TRUE, STATUS_SUCCESS );
+        }
+        cursor += length;
+        remaining -= length;
+    }
+}
+
 static void notify_map_view_of_section( HANDLE handle, void *addr, SIZE_T size, ULONG alloc,
                                         ULONG protect, NTSTATUS *ret_status )
 {
     SECTION_IMAGE_INFORMATION info;
+    SECTION_BASIC_INFORMATION basic;
     NTSTATUS status;
+
+    /* Do this before the loader-name gate: ordinary section mappings do not
+     * have ArbitraryUserPointer. Both NtMapViewOfSection variants reach here
+     * only after a successful map into the current process. */
+    if (!NtQuerySection( handle, SectionBasicInformation, &basic, sizeof(basic), NULL ) &&
+        !(basic.Attributes & SEC_IMAGE))
+    {
+        notify_mapped_section_protection( addr, size );
+        return;
+    }
 
     /* iOS-Madeira ml184 PROBE. FEX only treats a guest range as executable if
      * InvalidationTracker::XIntervals covers it, and that is populated ONLY from
@@ -3555,8 +3599,144 @@ static void dispatch_syscall( ARM64_NT_CONTEXT *context )
 }
 
 
+extern char arm64x_check_call_probe_begin[], arm64x_check_call_probe_end[];
+
+/* The check-call code reads a non-EC destination to recognise optional x64
+ * fast-forward, syscall and indirect-jump sequences. An inaccessible target
+ * must fault in the emulator, rather than expose this native probe's PC to
+ * an x64 exception hook (which can resume it at an x86 instruction boundary).
+ * Finish the same exit-thunk selection as .Lexit, without changing the page
+ * protection or delivering/suppressing the eventual guest exception.
+ *
+ * Only the iOS native probe path is eligible. In particular, a fault in
+ * translated code, a bitmap lookup or an unrelated native function is not a
+ * failed optional probe. Labels keep the range independent of image layout. */
+static BOOL recover_arm64x_code_probe( EXCEPTION_RECORD *rec, ARM64_NT_CONTEXT *ctx )
+{
+    ULONG_PTR pc, begin, end;
+
+    if (!p_ios_jit_reverse_translate_addr || !pBeginSimulation ||
+        !get_arm64ec_cpu_area() || get_arm64ec_cpu_area()->InSimulation ||
+        rec->ExceptionCode != STATUS_ACCESS_VIOLATION ||
+        rec->NumberParameters != 2 || rec->ExceptionInformation[0] != 0 ||
+        !ctx->Lr || (ctx->Lr & 3) || !ctx->X10 || (ctx->X10 & 3))
+        return FALSE;
+
+    pc = (ULONG_PTR)xlate_ios_jit_rev( (void *)(ULONG_PTR)ctx->Pc );
+    begin = (ULONG_PTR)xlate_ios_jit_rev( arm64x_check_call_probe_begin );
+    end = (ULONG_PTR)xlate_ios_jit_rev( arm64x_check_call_probe_end );
+    if (!begin || end <= begin || pc < begin || pc >= end || (pc & 3)) return FALSE;
+
+    ctx->X9 = ctx->X11;
+    ctx->X11 = ctx->X10;
+    ctx->Pc = ctx->Lr;
+    return TRUE;
+}
+
+static BOOL emulator_probe_recovery_enabled(void)
+{
+    UNICODE_STRING name, value;
+    WCHAR buffer[2];
+
+    RtlInitUnicodeString( &name, L"MADEIRA_D2R_PROBE_RECOVERY" );
+    value.Buffer = buffer;
+    value.Length = 0;
+    value.MaximumLength = sizeof(buffer);
+    return !RtlQueryEnvironmentVariable_U( NULL, &name, &value ) &&
+           value.Length == sizeof(WCHAR) && buffer[0] == '1';
+}
+
+/* The iOS emulator's ExitToX64 also inspects a destination before entering
+ * emulation, to recognise an optional fast-forward sequence. A failed read
+ * there must take the ordinary exported DispatchJump path. Both dispatchers
+ * receive the target in X9 and push LR exactly once; none of the argument,
+ * stack or nonvolatile registers have changed at these three reads.
+ *
+ * This is an integration guard for the known dispatcher ABI, not a generic
+ * native-fault recovery. Validate the entire probe prefix at its export,
+ * recognise only its target reads, and decline unknown emulator versions.
+ * In particular, bitmap and alias-table faults must remain exceptions. */
+static BOOL recover_emulator_code_probe( EXCEPTION_RECORD *rec, ARM64_NT_CONTEXT *ctx )
+{
+    static const ULONG prefix[] =
+    {
+        0xf9400130, /* ldr x16,[x9] */
+        0xd2916911, 0xf2a91891, 0xf2cb1131, 0xf2eaa411, /* FFS pattern in x17 */
+        0xeb11021f, /* cmp x16,x17 */
+        0x54000001, /* b.ne ordinary entry (displacement checked separately) */
+        0x79401130, /* ldrh w16,[x9,#8] */
+        0x529d2bb1, /* mov w17,#0xe95d */
+        0x6b11021f, /* cmp w16,w17 */
+        0x54000001, /* b.ne same ordinary entry */
+        0xb880a130  /* ldursw x16,[x9,#10] */
+    };
+    const ULONG *code;
+    ULONG_PTR pc, entry, jump, offset, length;
+    unsigned int i;
+
+    if (!p_ios_jit_reverse_translate_addr || !pBeginSimulation ||
+        !emulator_probe_recovery_enabled() ||
+        !ios_exit_to_x64 || !ios_dispatch_jump ||
+        !get_arm64ec_cpu_area() || get_arm64ec_cpu_area()->InSimulation ||
+        rec->ExceptionCode != STATUS_ACCESS_VIOLATION || rec->NumberParameters != 2 ||
+        rec->ExceptionInformation[0] != 0 || !ctx->Lr || (ctx->Lr & 3) ||
+        ctx->X9 >> 39 || RtlIsEcCode( ctx->X9 ))
+        return FALSE;
+
+    pc = (ULONG_PTR)xlate_ios_jit_rev( (void *)(ULONG_PTR)ctx->Pc );
+    entry = (ULONG_PTR)xlate_ios_jit_rev( ios_exit_to_x64 );
+    jump = (ULONG_PTR)xlate_ios_jit( ios_dispatch_jump );
+    if (!entry || (entry & 3) || !jump || (jump & 3)) return FALSE;
+
+    if (pc == entry) { offset = 0; length = 8; }
+    else if (pc == entry + 7 * sizeof(ULONG)) { offset = 8; length = 2; }
+    else if (pc == entry + 11 * sizeof(ULONG)) { offset = 10; length = 4; }
+    else return FALSE;
+    if (rec->ExceptionInformation[1] - ctx->X9 - offset >= length) return FALSE;
+
+    code = (const ULONG *)entry;
+    for (i = 0; i < ARRAY_SIZE(prefix); i++)
+    {
+        ULONG mask = (i == 6 || i == 10) ? 0xff00001f : ~0u;
+        if ((code[i] & mask) != prefix[i]) return FALSE;
+    }
+    /* Both forward mismatch branches must select the same fallback, after
+     * the inspected prefix and before the branch-immediate sign bit. */
+    if ((code[6] & 0x00800000) || (code[10] & 0x00800000) ||
+        6 + ((code[6] >> 5) & 0x7ffff) != 10 + ((code[10] >> 5) & 0x7ffff) ||
+        6 + ((code[6] >> 5) & 0x7ffff) < ARRAY_SIZE(prefix)) return FALSE;
+
+    /* Preserve the target, LR, SP, arguments and flags. DispatchJump performs
+     * the existing stack push and emulator entry; the page stays protected. */
+    ctx->Pc = jump;
+    return TRUE;
+}
+
 static void * __attribute__((used)) prepare_exception_arm64ec( EXCEPTION_RECORD *rec, ARM64EC_NT_CONTEXT *context, ARM64_NT_CONTEXT *arm_ctx )
 {
+    if (rec->ExceptionCode == STATUS_ACCESS_VIOLATION)
+    {
+        ARM64_NT_CONTEXT probe_ctx = *arm_ctx;
+        if (recover_arm64x_code_probe( rec, &probe_ctx ))
+        {
+            static LONG probe_n;
+            if (InterlockedIncrement( &probe_n ) <= 16)
+                ERR( "[ec-probe-fallback] native probe %p target %p unreadable; returning to x64 exit thunk\n",
+                     (void *)(ULONG_PTR)arm_ctx->Pc, (void *)(ULONG_PTR)arm_ctx->X11 );
+            /* Use the native syscall: NtContinue's public EC wrapper converts an
+             * x64 context. Leave the original context intact if continuation fails. */
+            syscall_NtContinue( &probe_ctx, FALSE );
+        }
+        probe_ctx = *arm_ctx;
+        if (recover_emulator_code_probe( rec, &probe_ctx ))
+        {
+            static LONG emulator_probe_n;
+            if (InterlockedIncrement( &emulator_probe_n ) <= 16)
+                ERR( "[ec-emulator-probe-fallback] native probe %p target %p unreadable; entering dispatcher\n",
+                     (void *)(ULONG_PTR)arm_ctx->Pc, (void *)(ULONG_PTR)arm_ctx->X9 );
+            syscall_NtContinue( &probe_ctx, FALSE );
+        }
+    }
     if (rec->ExceptionCode == STATUS_EMULATION_SYSCALL) dispatch_syscall( arm_ctx );
     context_arm_to_x64( context, arm_ctx );
     /* iOS-Madeira task#34 probe: FEX's LogMan output is invisible on iOS (its
@@ -4870,6 +5050,8 @@ static void __attribute__((naked)) arm64x_check_call(void)
          /* check if dest is aligned */
          "tst x11, #15\n\t"                 /* dest & 15 */
          "b.ne .Ljmp\n\t"
+         ".globl arm64x_check_call_probe_begin\n"
+         "arm64x_check_call_probe_begin:\n\t"
          "ldr x16, [x11]\n\t"               /* dest code */
          /* check for fast-forward sequence */
          "ldr x17, .Lffwd_seq\n\t"
@@ -4916,6 +5098,8 @@ static void __attribute__((naked)) arm64x_check_call(void)
          "ldr x11, [x16, w9, sxtw]\n\t"
          "b \"#arm64x_check_call\"\n"       /* restart checks with jump destination */
          /* not a special sequence, call the exit thunk */
+         ".globl arm64x_check_call_probe_end\n"
+         "arm64x_check_call_probe_end:\n\t"
          ".Lexit:\n\t"
          "mov x9, x11\n\t"
          "mov x11, x10\n\t"
