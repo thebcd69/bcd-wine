@@ -78,6 +78,17 @@
 WINE_DEFAULT_DEBUG_CHANNEL(sync);
 
 HANDLE keyed_event = 0;
+
+#ifdef WINE_IOS
+/* madeira-bcd (2026-10-24, modified): the keyed event a NULL handle means. Stock Wine creates one per Wine process (start_main_thread) and keeps
+ * its handle in the global above. On iOS every Windows process of a session is a pseudo-process of ONE unix process, so the global holds the
+ * FIRST pseudo-process's handle, a number that means nothing (or another object: STATUS_OBJECT_TYPE_MISMATCH) in a child's handle table.
+ * With env.MADEIRA_KEYED_EVENT_PER_PROCESS = 1 the child creates its own at boot (loader_ios.c) and this returns it; without the switch it
+ * returns the global, the old behaviour. */
+extern HANDLE ios_keyed_event( void );
+#else
+#define ios_keyed_event() keyed_event
+#endif
 int inproc_device_fd = -1;
 
 static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
@@ -3900,7 +3911,7 @@ NTSTATUS WINAPI NtWaitForKeyedEvent( HANDLE handle, const void *key,
 
     TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
 
-    if (!handle) handle = keyed_event;
+    if (!handle) handle = ios_keyed_event();
     if ((ULONG_PTR)key & 1) return STATUS_INVALID_PARAMETER_1;
     if (alertable) flags |= SELECT_ALERTABLE;
     select_op.keyed_event.op     = SELECT_KEYED_EVENT_WAIT;
@@ -3921,7 +3932,7 @@ NTSTATUS WINAPI NtReleaseKeyedEvent( HANDLE handle, const void *key,
 
     TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
 
-    if (!handle) handle = keyed_event;
+    if (!handle) handle = ios_keyed_event();
     if ((ULONG_PTR)key & 1) return STATUS_INVALID_PARAMETER_1;
     if (alertable) flags |= SELECT_ALERTABLE;
     select_op.keyed_event.op     = SELECT_KEYED_EVENT_RELEASE;
