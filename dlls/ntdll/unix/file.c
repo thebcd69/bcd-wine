@@ -271,6 +271,7 @@ static unsigned int ios_dir_gone;   /* entries skipped because their stat failed
 static BOOL ios_dir_read_by_path( int fd )
 {
     static int enabled = -1;
+    struct stat fst, pst;
 
     if (enabled < 0)
     {
@@ -279,7 +280,13 @@ static BOOL ios_dir_read_by_path( int fd )
     }
     ios_dir_path[0] = 0;
     ios_dir_gone = 0;
-    if (!enabled || fcntl( fd, F_GETPATH, ios_dir_path ) == -1)
+    if (!enabled || fcntl( fd, F_GETPATH, ios_dir_path ) == -1 ||
+        /* madeira-bcd: F_GETPATH of a directory that was removed (or removed and made again) while
+         * it is open still answers its old name, and "dir/name" would then be some other
+         * directory's entry or none: read by path only while the path names this very directory,
+         * otherwise take the fchdir() read that has always worked for such a descriptor. */
+        fstat( fd, &fst ) == -1 || stat( ios_dir_path, &pst ) == -1 ||
+        fst.st_dev != pst.st_dev || fst.st_ino != pst.st_ino)
     {
         ios_dir_path[0] = 0;
         return FALSE;
