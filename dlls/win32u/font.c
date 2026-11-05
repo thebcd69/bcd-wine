@@ -6587,8 +6587,14 @@ extern int dprintf( int fd, const char *fmt, ... );
  * So: a session that found no fonts leaves the keys alone; a stale external entry that names a
  * font of the Windows directory is dropped from External Fonts only; and every font of the
  * Windows directory whose Fonts value is missing gets it back (the file name, as the template
- * has it). [fonts] logs the counts once per session. MADEIRA_FONT_KEYS_REPAIR=0 restores the
- * upstream behaviour. */
+ * has it). [fonts] logs the counts once per session.
+ *
+ * madeira-bcd: the first of the three always applies (a session that found no fonts has nothing
+ * to register and used to delete values; no working session reaches it). The other two apply only
+ * with MADEIRA_FONT_KEYS_REPAIR=1: BCD seeds C:\windows\Fonts with arial, verdana, georgia, cour,
+ * times, trebuc, msgothic and msmincho (WineProcessBridge.m) that no Fonts value names, and
+ * writing those values back would put them into DirectWrite's collection in every session,
+ * which changes what a game's text looks like today. */
 static BOOL ios_font_keys_repair_enabled(void)
 {
     static int enabled = -1;
@@ -6596,7 +6602,7 @@ static BOOL ios_font_keys_repair_enabled(void)
     if (enabled < 0)
     {
         const char *e = getenv( "MADEIRA_FONT_KEYS_REPAIR" );
-        enabled = !(e && e[0] == '0');
+        enabled = e && e[0] == '1';   /* madeira-bcd: opt-in (upstream: on, =0 turns it off) */
     }
     return enabled;
 }
@@ -6647,10 +6653,10 @@ static void update_external_font_keys(void)
             if (face->flags & ADDFONT_EXTERNAL_FONT) external++;
         }
     }
-    if (repair && !faces)
+    if (!faces)   /* madeira-bcd: always (upstream: only with the repair switch on) */
     {
         dprintf( 2, "[fonts] ml2330 this session found no fonts: the Fonts registry keys are left as "
-                 "they are (MADEIRA_FONT_KEYS_REPAIR=0 lets upstream delete every external entry's value)\n" );
+                 "they are (upstream Wine deletes every external entry's value here)\n" );
         return;
     }
 #endif
