@@ -1512,7 +1512,9 @@ static BOOLEAN get_dir_case_sensitivity( int root_fd, const char *dir )
  * Wine since (dircache_gen); otherwise one stat compares the directory's
  * device, inode and mtime, and it is read again only if they changed. Only
  * lookups from the root (absolute paths) are cached; a directory that cannot
- * be listed falls back to the scan. MADEIRA_DIRCACHE=0 turns it off;
+ * be listed falls back to the scan. madeira-bcd: OFF unless MADEIRA_DIRCACHE=1
+ * (upstream has it on and MADEIRA_DIRCACHE=0 turning it off): its benefit is
+ * measured on Team Fortress 2 only, so it is a per-game setting here;
  * MADEIRA_DIRCACHE_TTL_MS sets the trust window (default 1000, 0 checks the
  * directory on every lookup). */
 
@@ -1577,9 +1579,9 @@ static BOOL dircache_enabled(void)
         const char *v = getenv( "MADEIRA_DIRCACHE" );
         const char *ttl = getenv( "MADEIRA_DIRCACHE_TTL_MS" );
         if (ttl && *ttl) dircache_ttl_ms = strtoul( ttl, NULL, 10 );
-        dircache_on = !(v && v[0] == '0' && !v[1]);
-        ERR( "[dircache] %s, trust window %u ms (MADEIRA_DIRCACHE=0 disables)\n",
-             dircache_on ? "on" : "off", (unsigned int)dircache_ttl_ms );
+        dircache_on = v && v[0] == '1' && !v[1];
+        if (dircache_on)
+            ERR( "[dircache] on, trust window %u ms (MADEIRA_DIRCACHE=1)\n", (unsigned int)dircache_ttl_ms );
     }
     return dircache_on;
 }
@@ -1588,6 +1590,7 @@ static BOOL dircache_enabled(void)
  * checked against its directory again before it is used. */
 static void dircache_changed(void)
 {
+    if (dircache_on <= 0) return;   /* off, or not asked yet: no entry exists that could be stale */
     __atomic_add_fetch( &dircache_gen, 1, __ATOMIC_RELEASE );
 }
 
@@ -3572,9 +3575,8 @@ static NTSTATUS find_file_in_dir( int root_fd, char *unix_name, int pos, const W
 #ifdef WINE_IOS
     /* Madeira: answer from the directory's cached listing (see dircache_find).
      * Short names (PROGRA~1) still go through the scan below. */
-    if (!check_case && root_fd == AT_FDCWD && pos > 1 && unix_name[0] == '/' &&
-        !(length >= 8 && name[4] == '~' && is_legal_8dot3_name( name, length )) &&
-        dircache_enabled())
+    if (dircache_enabled() && !check_case && root_fd == AT_FDCWD && pos > 1 && unix_name[0] == '/' &&
+        !(length >= 8 && name[4] == '~' && is_legal_8dot3_name( name, length )))
     {
         int r = dircache_find( unix_name, pos, name, length, unix_name + pos + 1 );
         if (r > 0)
