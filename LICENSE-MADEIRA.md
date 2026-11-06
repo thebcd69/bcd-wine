@@ -71,6 +71,16 @@ distributes under **LGPL-2.1-or-later**. This branch keeps that licence.
     Connor Gow, written with AI assistance, 2026-09-27. Carried in
     `patches/wine-opengl-winios.patch`.
 
+  - Taken from Madeira's Wine fork (`willfaust/wine`, branch `madeira-lgpl`) after the two forks diverged on 2026-10-15, with the
+    authors kept in the commit history; **LGPL-2.1-or-later**, copyright retained by the authors. The
+    first hash is the commit in this fork, the second the same commit in Madeira's fork. Author Ixion, 2026-10-24: `40a6ae89eed`
+    (`11f6aa3a931`), ntdll iOS: answer case-insensitive lookups from cached directory listings. Author ft7t8drgwf-wq (GitHub
+    insertfloppy), 2026-10-28: `19bc4fe8994` (`3e1dcdfdaf6`), a directory cache per process, and `d58b0ea9c34` (`9a64361cce7`), read
+    directories by path; 2026-10-30: `bd8c29cedfd` (`c0ad4a57a5a`), kernelbase: implement SetThreadIdealProcessorEx. Author 125hz,
+    2026-11-01: `afa91d22c44` (`baaab873d22`), win32u: keep the Fonts values of the Windows directory's fonts. The pin moved to them on
+    2026-11-05. The opengl32 commit `7aa1902adac` (2026-11-05) applies the patch `patches/wine-opengl-winios.patch` of Madeira's main
+    repository (author Connor Gow, listed above) to this tree; its 1,956 added lines are the patch's.
+
 The LGPL permits combining this library with proprietary components (such
 as Apple's Metal Shader Converter) subject to LGPL-2.1 section 6; see the
 Madeira repository's `docs/LICENSING.md`.
