@@ -2057,8 +2057,9 @@ static bool compile_shader(const struct hlsl_ir_compile *compile, struct fx_writ
     if (d3dbc)
         program.f32_denorm_mode = VSIR_DENORM_FLUSH_TO_ZERO;
 
-    /* madeira-bcd: the shaders of an fx_2_0 effect (the writer before compiled none). */
-    if (fx_writer_enabled() && ctx->profile->major_version == 2)
+    /* madeira-bcd: the shaders of every effect. In fx_4_0 / fx_5_0 even the first one read its constant buffers past the
+     * layout the effect binds before this (fx_write_context_init() had laid the buffers out already). */
+    if (fx_writer_enabled())
         reset_effect_compile_state(ctx);
     profile = ctx->profile;
     ctx->profile = compile->profile;
