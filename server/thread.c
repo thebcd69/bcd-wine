@@ -1830,11 +1830,42 @@ static int ios_apc_busy_queue_enabled( void )
     return enabled;
 }
 
-/* the thread to queue an undeliverable async I/O APC on, or NULL to drop it as before */
+/* BCD: an async I/O APC for the thread that issued a blocking (synchronous) request.
+ *
+ * From Madeira's Wine fork (commit 243c626d56f, "server: retain blocking I/O completions on the
+ * issuing thread", by intraducine): a pending synchronous request with a live wait handle always
+ * enters wait_async() on that handle on its issuing thread after the request reply, so its
+ * completion APC may stay queued on the issuer until that server wait runs it, instead of being
+ * dropped when no other thread of the process is waiting in the server. Madeira does this in
+ * every session. In BCD the "dropped, no waiting thread" line is in half of all logs (1,962 of
+ * the 3,881 log files of 2026-10-20 to 2026-11-10), working games among them, so the old path
+ * stays the default and this one is a switch: MADEIRA_APC_DEFER_ISSUER=1 keeps such an APC on
+ * its issuing thread ("[apc-requeue] ... -> issuing thread"). Unset or anything else: nothing
+ * changes. It is looked at before MADEIRA_APC_BUSY_QUEUE, and unlike that switch it also applies
+ * when the process has the in-process engine (thread->alert_sync), because the issuer's next
+ * wait is a server wait. */
+static int ios_apc_defer_issuer_enabled( void )
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *e = getenv( "MADEIRA_APC_DEFER_ISSUER" );
+        enabled = e && e[0] == '1';
+        if (enabled)
+            fprintf( stderr, "[apc-requeue] MADEIRA_APC_DEFER_ISSUER=1: the completion APC of a pending synchronous "
+                     "request stays on its issuing thread when no other thread can take it\n" );
+    }
+    return enabled;
+}
+
+/* A waiting thread, the synchronous request's future waiter (MADEIRA_APC_DEFER_ISSUER=1), the busy
+ * thread itself (MADEIRA_APC_BUSY_QUEUE=1), or NULL to drop it as before. */
 static struct thread *ios_apc_requeue_target( struct thread *thread, const struct thread_apc *apc )
 {
     static unsigned int count;
     struct thread *candidate, *target = NULL;
+    const char *kept = "kept on the busy thread";
 
     if (apc->call.type != APC_ASYNC_IO || !ios_apc_requeue_enabled()) return NULL;
     LIST_FOR_EACH_ENTRY( candidate, &thread->process->thread_list, struct thread, proc_entry )
@@ -1846,12 +1877,17 @@ static struct thread *ios_apc_requeue_target( struct thread *thread, const struc
             break;
         }
     }
+    if (!target && ios_apc_defer_issuer_enabled() && async_can_defer_to_issuer( apc->owner, thread ))
+    {
+        target = thread;
+        kept = "issuing thread";
+    }
     if (!target && !thread->alert_sync && ios_apc_busy_queue_enabled()) target = thread;   /* ajan14/ea-mono */
     count++;
     if (count <= 16 || !(count & 1023))
         fprintf( stderr, "[apc-requeue] #%u async I/O APC status=%08x for busy thread %04x -> %s %04x\n",
                  count, apc->call.async_io.status, thread->id,
-                 target == thread ? "kept on the busy thread" :
+                 target == thread ? kept :
                  target ? "waiting thread" : "dropped, no waiting thread", target ? target->id : 0 );
     return target;
 }
