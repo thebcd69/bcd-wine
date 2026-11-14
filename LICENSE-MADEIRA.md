@@ -105,6 +105,10 @@ distributes under **LGPL-2.1-or-later**. This branch keeps that licence.
     (`MADEIRA_SETUPAPI_MEDIA_FIX` = 1: every callback, as in Madeira; 0: never). `aa9d15493b9`: `MADEIRA_APC_DEFER_ISSUER`
     (`7f9dbec02f1`) is read on every call. `8ac268308db`: the test for inverse daylight saving in `get_timezone_info`, the function
     `4a7d943a244` changes, asks for exactly one hour (the criterion comes from BCD's review of that commit).
+  - Author 125hz, taken 2026-11-14 (willfaust/Madeira#575, willfaust/wine#71), in vkd3d-shader's `libs/vkd3d/libs/vkd3d-shader/fx.c`
+    (vkd3d's own licence, LGPL-2.1-or-later): `1a5e1941899` (`8be7412f882`), 2026-11-04, the fx_2_0 writer emits sampler initializers,
+    pass assignments and their resource records; `0f29e706b5c` (`ddf92babc5b`), 2026-11-05, numeric states carry every component, TRUE
+    and FALSE beside a state's own names, a failed pass shader fails the effect.
 
 The LGPL permits combining this library with proprietary components (such
 as Apple's Metal Shader Converter) subject to LGPL-2.1 section 6; see the
