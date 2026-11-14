@@ -80,6 +80,15 @@ distributes under **LGPL-2.1-or-later**. This branch keeps that licence.
     2026-11-01: `afa91d22c44` (`baaab873d22`), win32u: keep the Fonts values of the Windows directory's fonts. The pin moved to them on
     2026-11-05. The opengl32 commit `7aa1902adac` (2026-11-05) applies the patch `patches/wine-opengl-winios.patch` of Madeira's main
     repository (author Connor Gow, listed above) to this tree; its 1,956 added lines are the patch's.
+  - Taken from Madeira's Wine fork (`willfaust/wine`, branch `madeira-lgpl`) on 2026-11-14, with the authors kept in the commit
+    history; **LGPL-2.1-or-later**, copyright retained by the authors. The first hash is the commit in this fork, the second the same
+    commit in Madeira's fork. Author Ash Hopkins, 2026-10-10: `6fc7d124af3` (`89481d27baf`), ntdll iOS: getsockopt, /dev/urandom and
+    ReadFileScatter data reach buffers in RWX memory. Author SirDank, 2026-10-24: `7998dc112a9` (`929cc3690b3`), ntdll: accept
+    SetNamedPipeHandleState on a pipe that is a plain unix fd (this fork's later commit `5aa5e3d2abd` limits it to the state such a
+    pipe has). Author 125hz, 2026-10-12: `a46ac90cd8a` (`ef6c5cf183e`), setupapi iOS: ask for the media again only after
+    FILEOP_NEWPATH. Author intraducine, 2026-10-26: the function `async_can_defer_to_issuer` of `server/async.c` and its use in
+    `server/thread.c` come from `243c626d56f` (server: retain blocking I/O completions on the issuing thread); this fork's commit
+    `7f9dbec02f1` puts them behind the switch `MADEIRA_APC_DEFER_ISSUER`, which is off by default.
 
 The LGPL permits combining this library with proprietary components (such
 as Apple's Metal Shader Converter) subject to LGPL-2.1 section 6; see the
