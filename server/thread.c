@@ -1846,15 +1846,24 @@ static int ios_apc_busy_queue_enabled( void )
  * wait is a server wait. */
 static int ios_apc_defer_issuer_enabled( void )
 {
-    static int enabled = -1;
+    /* Read on every call, like ios_real_suspend_enabled (build/wineserver/mach_ios.c): a game's own file sets the
+     * variable for its session, the app clears it when the session ends, and this server runs again in the same
+     * process for the next session of the app run. A value kept from the first read would give a later game the
+     * earlier game's setting. The call is made only on the path where no waiting thread was found. Only the exact
+     * value 1 turns it on. Said when it turns on, and when it turns off after it was on. */
+    static int said;   /* 1 while the "on" line is the last thing said */
+    const char *e = getenv( "MADEIRA_APC_DEFER_ISSUER" );
+    int enabled = e && e[0] == '1' && !e[1];
 
-    if (enabled < 0)
+    if (enabled != said)
     {
-        const char *e = getenv( "MADEIRA_APC_DEFER_ISSUER" );
-        enabled = e && e[0] == '1';
+        said = enabled;
         if (enabled)
             fprintf( stderr, "[apc-requeue] MADEIRA_APC_DEFER_ISSUER=1: the completion APC of a pending synchronous "
                      "request stays on its issuing thread when no other thread can take it\n" );
+        else
+            fprintf( stderr, "[apc-requeue] MADEIRA_APC_DEFER_ISSUER is no longer 1: such an APC is dropped again when "
+                     "no other thread can take it\n" );
     }
     return enabled;
 }
