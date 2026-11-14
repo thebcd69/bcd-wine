@@ -1364,6 +1364,34 @@ static BOOL queue_copy_file( const WCHAR *source, const WCHAR *dest,
     return FALSE;
 }
 
+/* BCD: when does a missing file after SPFILENOTIFY_NEEDMEDIA become a copy error instead of a second
+ * NEEDMEDIA (Madeira ml1310, in SetupCommitFileQueueW below)?
+ *
+ * Madeira does it for every callback. But "same place" (FILEOP_DOIT) is also what a program's own
+ * callback answers after it has shown its "insert the disc" prompt, or while it counts retries before
+ * it answers something else; on Windows that callback is asked again, and with ml1310 it gets a copy
+ * error first, which some answer with an abort. The case that provably never ended is setupapi's own
+ * default callback: it answers FILEOP_DOIT to every NEEDMEDIA without looking at anything
+ * (SetupDefaultQueueCallbackA/W below), so the loop cannot end, and it answers FILEOP_SKIP to the copy
+ * error. So, by MADEIRA_SETUPAPI_MEDIA_FIX:
+ *   unset   only when the callback is SetupDefaultQueueCallbackW, or SetupDefaultQueueCallbackA
+ *           behind SetupCommitFileQueueA's wrapper; every other callback is asked again, as in Wine
+ *   1       for every callback (Madeira's behaviour)
+ *   0       never (Wine's behaviour: ask again for ever)
+ * Any other value is "unset". */
+static BOOL madeira_media_fix_applies( PSP_FILE_CALLBACK_W handler, void *context )
+{
+    WCHAR value[4];
+    DWORD len = GetEnvironmentVariableW( L"MADEIRA_SETUPAPI_MEDIA_FIX", value, ARRAY_SIZE(value) );
+
+    if (len == 1 && value[0] == '0') return FALSE;
+    if (len == 1 && value[0] == '1') return TRUE;
+    if (handler == SetupDefaultQueueCallbackW) return TRUE;
+    if (handler == QUEUE_callback_WtoA && context)
+        return ((struct callback_WtoA_context *)context)->orig_handler == SetupDefaultQueueCallbackA;
+    return FALSE;
+}
+
 /***********************************************************************
  *            SetupCommitFileQueueW   (SETUPAPI.@)
  */
@@ -1521,10 +1549,9 @@ BOOL WINAPI SetupCommitFileQueueW( HWND owner, HSPFILEQ handle, PSP_FILE_CALLBAC
                          * (the default one included) answers "same place" forever, and
                          * the loop never ended; report a copy error instead. Idea from
                          * the published patch 0014 of another iOS port.
-                         * MADEIRA_SETUPAPI_MEDIA_FIX=0 asks again forever, as before. */
-                        WCHAR fix[4];
-                        if (media_result == FILEOP_NEWPATH ||
-                            (GetEnvironmentVariableW( L"MADEIRA_SETUPAPI_MEDIA_FIX", fix, ARRAY_SIZE(fix) ) && fix[0] == '0'))
+                         * BCD: only for setupapi's own default callback unless MADEIRA_SETUPAPI_MEDIA_FIX
+                         * says otherwise, see madeira_media_fix_applies. */
+                        if (media_result == FILEOP_NEWPATH || !madeira_media_fix_applies( handler, context ))
                             continue;
                         ERR( "ml1310 %s not found after NEEDMEDIA answered %#x: reported as a copy error "
                              "instead of asking for the media again\n", debugstr_w(paths.Source), media_result );
