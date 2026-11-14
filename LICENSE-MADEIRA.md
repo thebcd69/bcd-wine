@@ -97,6 +97,14 @@ distributes under **LGPL-2.1-or-later**. This branch keeps that licence.
     by Zhou Qiankang, 2026-03-16. Adapted: this fork's commit `239489424db` changes `_time64` and `_time32` of `dlls/msvcrt/time.c` as Wine's
     `0497d0ff62f` does (msvcrt: Avoid expensive timezone queries from plain time() calls, by Benjamin Fischer, 2026-05-14) and
     keeps the `_tzset_init()` call that Wine's commit drops.
+  - This fork's own changes of 2026-11-14 to the commits listed in the two entries above (BCD; **LGPL-2.1-or-later** like the
+    files they are in). `0a5f587e0d7`: the getsockopt, DONTFRAG and /dev/urandom parts of `6fc7d124af3` call the kernel on the
+    caller's buffer first and take the local copy only after EFAULT; the NtReadFileScatter part of `6fc7d124af3` is unchanged, and in
+    BCD it does not reach RWX memory (the helpers Madeira's unix side has for that are in Madeira's main repository and were not
+    taken). `23e42159f72`: the media-loop change of `a46ac90cd8a` applies to setupapi's own default callback only
+    (`MADEIRA_SETUPAPI_MEDIA_FIX` = 1: every callback, as in Madeira; 0: never). `aa9d15493b9`: `MADEIRA_APC_DEFER_ISSUER`
+    (`7f9dbec02f1`) is read on every call. `8ac268308db`: the test for inverse daylight saving in `get_timezone_info`, the function
+    `4a7d943a244` changes, asks for exactly one hour (the criterion comes from BCD's review of that commit).
 
 The LGPL permits combining this library with proprietary components (such
 as Apple's Metal Shader Converter) subject to LGPL-2.1 section 6; see the
