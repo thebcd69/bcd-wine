@@ -1113,6 +1113,24 @@ static const struct fx_state fx_2_sampler_states[] =
     { "ElementIndex",  HLSL_CLASS_SAMPLER, HLSL_CLASS_SCALAR, FX_UINT,    1, 1, 176 },
 };
 
+/* madeira-bcd (build 660): the effect writer of build 660 (the fx_2_0 writer of Madeira's two commits before and BCD's
+ * compile-state reset, reset_effect_compile_state()) unless MADEIRA_FX_WRITER=0, read once per process. 0 gives back the
+ * effect writer of the builds before 660 byte for byte, for a game that ran better that way: the fx_2_0 refusals of sampler
+ * initializers, pass assignments and shader parameters, value offset 0 for a parameter without an initializer, and no
+ * reset between the shaders of an effect. */
+static bool fx_writer_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *value = getenv("MADEIRA_FX_WRITER");
+
+        enabled = !(value && value[0] == '0' && !value[1]);
+    }
+    return enabled;
+}
+
 static void write_fx_2_pass(struct hlsl_ir_var *var, struct fx_write_context *fx)
 {
     uint32_t name_offset, annotation_count_offset, count_offset, count;
@@ -1124,6 +1142,14 @@ static void write_fx_2_pass(struct hlsl_ir_var *var, struct fx_write_context *fx
     count_offset = put_u32(buffer, 0);
 
     write_fx_2_annotations(var, annotation_count_offset, fx);
+
+    if (!fx_writer_enabled())
+    {
+        if (var->state_block_count && var->state_blocks[0]->count)
+            hlsl_fixme(fx->ctx, &var->loc, "Write pass assignments.");
+        fx->shader_count++;
+        return;
+    }
 
     /* The technique and pass indices were set by write_fx_2_technique(). */
     fx->fx_2_target.element = ~0u;
@@ -1868,6 +1894,8 @@ static uint32_t write_fx_2_default_value(struct hlsl_type *value_type, struct hl
 
     if (!value)
     {
+        if (!fx_writer_enabled())
+            return 0;
         /* A parameter without an initializer gets zeros, as fxc writes them;
          * offset 0 would point d3dx9 at the first type record instead. */
         comp_count = hlsl_type_component_count(value_type);
@@ -1926,10 +1954,73 @@ static uint32_t write_fx_2_default_value(struct hlsl_type *value_type, struct hl
     return offset;
 }
 
+/* madeira-bcd (build 660): every shader of an effect is compiled in the one hlsl_ctx the effect was parsed in, and
+ * hlsl_emit_vsir() is written for one shader per context: what a compile leaves behind is read by the next one. In SM1-3
+ * the literal `def`s and the sin/cos constants (a later shader carried an earlier one's `def c1 = 2, 2, 2, 2` over its own
+ * matrix); in every model the registers, bind counts, use flags and object usage of the variables (two uniforms on one
+ * register, an earlier shader's samplers declared again), the temp counters, the variables the lowering adds to the
+ * globals, and the constant buffers' layout (fx_write_context_init() lays the buffers out for the effect, and a compile
+ * laid its variables out again behind that end). Before a compile the context gets back what a freshly parsed one has, so
+ * the shader is the one the same function compiled alone gives (tests/host/check-vkd3d-fx2-effects.py compares them); the
+ * compile lays the buffers out from offset 0 in the same order, so the effect's own layout, which the writer takes from
+ * var->buffer_offset and buffer->size, is the same after it as before. */
+static void reset_effect_compile_state(struct hlsl_ctx *ctx)
+{
+    struct hlsl_ir_var *var, *next;
+    struct hlsl_buffer *buffer;
+    struct hlsl_scope *scope;
+    unsigned int k;
+
+    /* The variables a compile's lowering adds to the globals (the combined samplers of SM1-3, the separated textures of
+     * SM4): a fresh context has none, and a later compile that found one declared nothing for it. Nothing refers to them
+     * once their compile is done; the dummy scope keeps them until the context is freed. */
+    LIST_FOR_EACH_ENTRY_SAFE(var, next, &ctx->globals->vars, struct hlsl_ir_var, scope_entry)
+    {
+        if (!var->is_synthetic)
+            continue;
+        list_remove(&var->scope_entry);
+        list_add_tail(&ctx->dummy_scope->vars, &var->scope_entry);
+    }
+
+    ctx->constant_defs.count = 0;
+    memset(&ctx->d3dsincosconst1, 0, sizeof(ctx->d3dsincosconst1));
+    memset(&ctx->d3dsincosconst2, 0, sizeof(ctx->d3dsincosconst2));
+    ctx->ssa_count = 0;
+    ctx->temp_count = 0;
+    ctx->indexable_temp_count = 0;
+
+    LIST_FOR_EACH_ENTRY(scope, &ctx->scopes, struct hlsl_scope, entry)
+    {
+        LIST_FOR_EACH_ENTRY(var, &scope->vars, struct hlsl_ir_var, scope_entry)
+        {
+            memset(var->regs, 0, sizeof(var->regs));
+            memset(var->bind_count, 0, sizeof(var->bind_count));
+            var->is_read = false;
+            /* hlsl_new_var() sized each array by the type's register count. */
+            for (k = 0; k <= HLSL_REGSET_LAST_OBJECT; ++k)
+            {
+                if (var->objects_usage[k])
+                    memset(var->objects_usage[k], 0, var->data_type->reg_size[k] * sizeof(*var->objects_usage[k]));
+            }
+        }
+    }
+
+    LIST_FOR_EACH_ENTRY(buffer, &ctx->buffers, struct hlsl_buffer, entry)
+    {
+        buffer->size = 0;
+        buffer->used_size = 0;
+        memset(&buffer->reg, 0, sizeof(buffer->reg));
+        buffer->manually_packed_elements = false;
+        buffer->automatically_packed_elements = false;
+    }
+}
+
 static bool compile_shader(const struct hlsl_ir_compile *compile, struct fx_write_context *fx,
         struct vkd3d_shader_code *code)
 {
-    bool d3dbc = compile->profile->major_version < 4;
+    /* madeira-bcd: D3D bytecode only inside an fx_2_0 effect; an fx_4_0 / fx_5_0 effect keeps the DXBC container it
+     * always got for a profile below 4 (Direct3D 10 refuses such a shader either way). */
+    bool d3dbc = fx->ctx->profile->major_version == 2 && compile->profile->major_version < 4;
     struct vkd3d_shader_code reflection = { 0 };
     const struct hlsl_profile_info *profile;
     struct hlsl_ctx *ctx = fx->ctx;
@@ -1966,6 +2057,9 @@ static bool compile_shader(const struct hlsl_ir_compile *compile, struct fx_writ
     if (d3dbc)
         program.f32_denorm_mode = VSIR_DENORM_FLUSH_TO_ZERO;
 
+    /* madeira-bcd: the shaders of an fx_2_0 effect (the writer before compiled none). */
+    if (fx_writer_enabled() && ctx->profile->major_version == 2)
+        reset_effect_compile_state(ctx);
     profile = ctx->profile;
     ctx->profile = compile->profile;
     ret = hlsl_emit_vsir(ctx, &compile_info, compile->decl, &compile->initializers, &program, &reflection);
@@ -2032,7 +2126,13 @@ static uint32_t write_fx_2_object_initializer(const struct hlsl_ir_var *var, str
     const void *data;
 
     if (type->class == HLSL_CLASS_SAMPLER)
-        return write_fx_2_sampler_initializer(var, fx);
+    {
+        if (fx_writer_enabled())
+            return write_fx_2_sampler_initializer(var, fx);
+        for (i = 0; i < elements_count; ++i)
+            hlsl_fixme(fx->ctx, &var->loc, "Writing fx_2_0 sampler objects initializers is not implemented.");
+        return offset;
+    }
 
     for (i = 0; i < elements_count; ++i)
     {
@@ -2155,9 +2255,14 @@ static bool is_type_supported_fx_2(struct hlsl_ctx *ctx, const struct hlsl_type 
             break;
 
         case HLSL_CLASS_STRING:
+            return true;
+
         case HLSL_CLASS_PIXEL_SHADER:
         case HLSL_CLASS_VERTEX_SHADER:
-            return true;
+            if (fx_writer_enabled())
+                return true;
+            hlsl_fixme(ctx, loc, "Write fx 2.0 parameter class %#x.", type->class);
+            return false;
 
         case HLSL_CLASS_DEPTH_STENCIL_STATE:
         case HLSL_CLASS_DEPTH_STENCIL_VIEW:
@@ -2203,6 +2308,9 @@ static void write_fx_2_parameters(struct fx_write_context *fx)
     LIST_FOR_EACH_ENTRY(var, &ctx->globals->vars, struct hlsl_ir_var, scope_entry)
     {
         if (!(var->storage_modifiers & HLSL_STORAGE_UNIFORM))
+            continue;
+        /* madeira-bcd: a combined sampler a shader parameter's compile added is not a parameter of the effect. */
+        if (var->is_synthetic)
             continue;
 
         if (!is_type_supported_fx_2(ctx, var->data_type, &var->loc))
