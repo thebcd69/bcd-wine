@@ -2083,24 +2083,26 @@ static NTSTATUS do_getsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
     int fd, needs_close = FALSE;
     socklen_t len = out_size;
     NTSTATUS status;
-    int ret;
-    /* The kernel fills a local copy and the caller's buffer is written by an ordinary store. On iOS, Madeira maps
-     * anonymous RWX memory as an RX view with a separate RW alias (W^X): the kernel cannot write such a buffer
-     * (EFAULT, so WSAEFAULT where Windows succeeds), while a store into it is redirected to the alias. */
-    char local[256], *tmp = out_size <= sizeof(local) ? local : malloc( out_size );
+    int ret, err, copy = 0;
+    char local[256];
 
-    if (!tmp) return STATUS_NO_MEMORY;
     if ((status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, NULL )))
-    {
-        if (tmp != local) free( tmp );
         return status;
-    }
 
-    ret = getsockopt( fd, level, option, tmp, &len );
+    ret = getsockopt( fd, level, option, out_buffer, &len );
+    /* On iOS, Madeira maps anonymous RWX memory as an RX view with a separate RW alias (W^X): the kernel cannot write
+     * such a buffer (EFAULT, so WSAEFAULT where Windows succeeds), while a store into it is redirected to the alias.
+     * BCD: the local copy is taken only then, where the call failed before; every other call is the direct one above,
+     * as it always was (the copy is bounded, so a caller's length is never allocated). */
+    if (ret && errno == EFAULT)
+    {
+        len = min( out_size, sizeof(local) );
+        if (!(ret = getsockopt( fd, level, option, local, &len ))) copy = 1;
+    }
+    err = errno;
     if (needs_close) close( fd );
-    if (!ret) memcpy( out_buffer, tmp, min( len, out_size ) );
-    if (tmp != local) free( tmp );
-    if (ret) return sock_errno_to_status( errno );
+    if (ret) return sock_errno_to_status( err );
+    if (copy) memcpy( out_buffer, local, len );
     if (io)
     {
         io->Status = STATUS_SUCCESS;
@@ -2678,10 +2680,12 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
                 return status;
 
 #ifdef IP_DONTFRAG
-            {   /* a local copy, see do_getsockopt */
+            ret = getsockopt( fd, IPPROTO_IP, IP_DONTFRAG, out_buffer, &len );
+            if (ret && errno == EFAULT)
+            {   /* a local copy where the kernel cannot write the buffer, see do_getsockopt */
                 char value[sizeof(DWORD)];
 
-                if (len > sizeof(value)) len = sizeof(value);
+                len = min( out_size, sizeof(value) );
                 ret = getsockopt( fd, IPPROTO_IP, IP_DONTFRAG, value, &len );
                 if (!ret) memcpy( out_buffer, value, len );
             }
@@ -2901,10 +2905,12 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
                 return status;
 
 #ifdef IPV6_DONTFRAG
-            {   /* a local copy, see do_getsockopt */
+            ret = getsockopt( fd, IPPROTO_IPV6, IPV6_DONTFRAG, out_buffer, &len );
+            if (ret && errno == EFAULT)
+            {   /* a local copy where the kernel cannot write the buffer, see do_getsockopt */
                 char value[sizeof(DWORD)];
 
-                if (len > sizeof(value)) len = sizeof(value);
+                len = min( out_size, sizeof(value) );
                 ret = getsockopt( fd, IPPROTO_IPV6, IPV6_DONTFRAG, value, &len );
                 if (!ret) memcpy( out_buffer, value, len );
             }

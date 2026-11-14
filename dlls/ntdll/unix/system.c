@@ -1597,22 +1597,31 @@ static void read_dev_urandom( void *buf, ULONG len )
     int fd = open( "/dev/urandom", O_RDONLY );
     if (fd != -1)
     {
-        /* read into a local chunk and copy it, so a buffer the kernel cannot write (anonymous RWX memory on iOS,
-         * see do_getsockopt in socket.c) is filled instead of silently left as it was */
         char chunk[256];
         int ret;
 
-        while (len)
+        do
         {
-            do
+            ret = read( fd, buf, len );
+        }
+        while (ret == -1 && errno == EINTR);
+        /* BCD: only where that read failed because the kernel cannot write the buffer (anonymous RWX memory on iOS,
+         * see do_getsockopt in socket.c): read into a local chunk and copy it, so the buffer is filled instead of
+         * silently left as it was. Every other read is the one above, as it always was. */
+        if (ret == -1 && errno == EFAULT)
+        {
+            while (len)
             {
-                ret = read( fd, chunk, min( len, sizeof(chunk) ) );
+                do
+                {
+                    ret = read( fd, chunk, min( len, sizeof(chunk) ) );
+                }
+                while (ret == -1 && errno == EINTR);
+                if (ret <= 0) break;
+                memcpy( buf, chunk, ret );
+                buf = (char *)buf + ret;
+                len -= ret;
             }
-            while (ret == -1 && errno == EINTR);
-            if (ret <= 0) break;
-            memcpy( buf, chunk, ret );
-            buf = (char *)buf + ret;
-            len -= ret;
         }
         close( fd );
     }
