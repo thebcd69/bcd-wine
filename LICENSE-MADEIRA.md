@@ -109,6 +109,12 @@ distributes under **LGPL-2.1-or-later**. This branch keeps that licence.
     (vkd3d's own licence, LGPL-2.1-or-later): `1a5e1941899` (`8be7412f882`), 2026-11-04, the fx_2_0 writer emits sampler initializers,
     pass assignments and their resource records; `0f29e706b5c` (`ddf92babc5b`), 2026-11-05, numeric states carry every component, TRUE
     and FALSE beside a state's own names, a failed pass shader fails the effect.
+  - This fork's own changes of 2026-11-14 to the commits of the entry above (BCD; **LGPL-2.1-or-later** like vkd3d-shader).
+    `f0d271b5c6c`: every shader of an fx_2_0 effect is compiled from the state a freshly parsed context has
+    (`reset_effect_compile_state`; before it, a later shader kept the literal constants, registers and samplers of the one compiled
+    before), D3D bytecode only inside an fx_2_0 effect, and `MADEIRA_FX_WRITER` = 0 gives back the effect writer before the two
+    commits byte for byte. `8f1e2c1d562`: the same reset before the shaders of fx_4_0 and fx_5_0 effects, which read their constant
+    buffers behind the effect's layout before (vkd3d-shader's own writer, older than the two commits).
 
 The LGPL permits combining this library with proprietary components (such
 as Apple's Metal Shader Converter) subject to LGPL-2.1 section 6; see the
