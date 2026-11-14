@@ -3069,7 +3069,18 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
     tm1 = tm2 = *tm;
     tm1.tm_isdst = 0;
     tm2.tm_isdst = 1;
-    inverted_dst = mktime(&tm1) < mktime(&tm2);
+    {
+        /* BCD: a zone has inverse daylight saving when the same wall-clock time read as "daylight" lies exactly one
+         * hour AFTER the same time read as "standard" (measured with a negative-daylight build of Europe/Dublin, in
+         * both seasons). Wine tests only "after". Apple's C library, for a zone that has no daylight saving now,
+         * reads the "daylight" form with a daylight type from the zone's history, which is not an hour away:
+         * Asia/Singapore and Asia/Kuala_Lumpur (+2400 s, the +07:20 of 1933), America/Santo_Domingo (+1800 s),
+         * America/Danmarkshavn (+7200 s). Wine's test took those four for inverse zones and reported them one hour
+         * off (Singapore as UTC+7). No zone of Apple's data is a real inverse zone (Dublin is shipped in the form
+         * without negative daylight saving), so on iOS this is never true; the code stays for a zone that is. */
+        time_t t1 = mktime(&tm1), t2 = mktime(&tm2);
+        inverted_dst = (t1 != (time_t)-1 && t2 != (time_t)-1 && t2 - t1 == 3600);
+    }
     if (inverted_dst) bias += 60;
 
     memset(tzi, 0, sizeof(*tzi));
