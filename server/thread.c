@@ -1776,17 +1776,22 @@ static int ios_apc_busy_queue_enabled( void );
 
 static int ios_apc_requeue_enabled( void )
 {
-    static int enabled = -1;
+    /* On by default: an async I/O completion for a busy thread goes to a waiting thread of
+     * its process, if there is one, instead of failing the I/O. 0 always drops it again. */
+    const char *e = getenv( "MADEIRA_APC_REQUEUE" );
+    int enabled = !(e && e[0] == '0');
+    static int said = -1;
 
-    if (enabled < 0)
+    /* BCD (build 660): the variable is read on every call, not once per app run. This server runs again
+     * in the same process for the next session of the app run (see ios_real_suspend_enabled, mach_ios.c),
+     * and a value kept from the first read gave every later game the first game's setting. The first read
+     * of an app run says what it always said; after that a line is written only when the value changes. */
+    if (enabled != said)
     {
-        /* On by default: an async I/O completion for a busy thread goes to a waiting thread of
-         * its process, if there is one, instead of failing the I/O. 0 always drops it again. */
-        const char *e = getenv( "MADEIRA_APC_REQUEUE" );
-        enabled = !(e && e[0] == '0');
+        said = enabled;
         fprintf( stderr, "[apc-requeue] %s (MADEIRA_APC_REQUEUE=0 restores dropping async I/O APCs "
                  "for busy threads)\n", enabled ? "on" : "off" );
-        if (enabled) ios_apc_busy_queue_enabled();   /* ajan14/ea-mono: says so once if the switch is set */
+        if (enabled) ios_apc_busy_queue_enabled();   /* ajan14/ea-mono: says so if the switch is set */
     }
     return enabled;
 }
@@ -1817,15 +1822,23 @@ static int ios_apc_requeue_enabled( void )
  * [apc-requeue] says "kept on the busy thread" for these. */
 static int ios_apc_busy_queue_enabled( void )
 {
-    static int enabled = -1;
+    /* BCD (build 660): read on every call, for the reason given in ios_apc_requeue_enabled: the EA app's
+     * entry, the Dock's Ubisoft sessions and two auto-tune rules set it for one session, and the cached
+     * value kept it on for every later game of the app run although the app clears the variable when the
+     * session ends. Said when it turns on (the old line) and when it turns off after it was on. */
+    static int said;   /* 1 while the "on" line is the last thing said */
+    const char *e = getenv( "MADEIRA_APC_BUSY_QUEUE" );
+    int enabled = e && e[0] == '1';
 
-    if (enabled < 0)
+    if (enabled != said)
     {
-        const char *e = getenv( "MADEIRA_APC_BUSY_QUEUE" );
-        enabled = e && e[0] == '1';
+        said = enabled;
         if (enabled)
             fprintf( stderr, "[apc-requeue] MADEIRA_APC_BUSY_QUEUE=1: an async I/O APC nobody else can take "
                      "stays on its busy thread (no in-process engine)\n" );
+        else
+            fprintf( stderr, "[apc-requeue] MADEIRA_APC_BUSY_QUEUE is no longer 1: such an APC is dropped again when "
+                     "nobody else can take it\n" );
     }
     return enabled;
 }
