@@ -89,6 +89,10 @@ distributes under **LGPL-2.1-or-later**. This branch keeps that licence.
     FILEOP_NEWPATH. Author intraducine, 2026-10-26: the function `async_can_defer_to_issuer` of `server/async.c` and its use in
     `server/thread.c` come from `243c626d56f` (server: retain blocking I/O completions on the issuing thread); this fork's commit
     `7f9dbec02f1` puts them behind the switch `MADEIRA_APC_DEFER_ISSUER`, which is off by default.
+  - Two commits of Wine itself made after the 11.4 baseline, cherry-picked unchanged on 2026-11-14 from winehq's `master`
+    (**LGPL-2.1-or-later**, copyright retained by their authors, who stay the commit authors). The first hash is the commit in this
+    fork, the second Wine's: `cce7e9bf9ad` (`c8b71506800`), ntdll: Fall back to statfs if "important" free space is 0 on macOS, by Tim Clem,
+    2026-04-10; `6c9f03c73b0` (`35f715b4eff`), ntdll: Fix out-of-bounds access in NtQueryInformationToken, by Nikola Kuburović, 2026-09-12.
 
 The LGPL permits combining this library with proprietary components (such
 as Apple's Metal Shader Converter) subject to LGPL-2.1 section 6; see the
